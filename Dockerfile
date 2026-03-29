@@ -1,35 +1,44 @@
-FROM ghcr.io/railwayapp/nixpacks:ubuntu-1745885067
+# Stage 1: Builder
+FROM node:20-bookworm AS builder
 
-ENTRYPOINT ["/bin/bash", "-l", "-c"]
-WORKDIR /app/
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs
-ENV PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+WORKDIR /app
 
+# Khai báo file lock để đảm bảo cài đặt dependencies chính xác tuyệt đối
+COPY package.json yarn.lock ./
+RUN yarn install --frozen-lockfile
 
+# Copy mã nguồn và thực thi tiến trình build
+COPY . .
+RUN yarn build
 
+# Stage 2: Runner
+FROM node:20-bookworm-slim AS runner
 
-ARG CI NIXPACKS_METADATA NODE_ENV NPM_CONFIG_PRODUCTION
-ENV CI=$CI NIXPACKS_METADATA=$NIXPACKS_METADATA NODE_ENV=$NODE_ENV NPM_CONFIG_PRODUCTION=$NPM_CONFIG_PRODUCTION
+ENV NODE_ENV=production
+WORKDIR /app
 
-# setup phase
-# noop
+# Cài đặt các thư viện hệ thống (chỉ phục vụ runtime)
+# Bao gồm client để tương tác Postgres và các font chữ để xuất file PDF
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    postgresql-client \
+    libfreetype6 \
+    fontconfig \
+    fonts-liberation \
+    fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
-# install phase
-ENV NIXPACKS_PATH=/app/node_modules/.bin:$NIXPACKS_PATH
-COPY . /app/.
-RUN --mount=type=cache,id=0V4592seSI-/usr/local/share/cache/yarn/v6,target=/usr/local/share/.cache/yarn/v6 npm install -g corepack@0.24.1 && corepack enable
-RUN --mount=type=cache,id=0V4592seSI-/usr/local/share/cache/yarn/v6,target=/usr/local/share/.cache/yarn/v6 yarn install --frozen-lockfile
+# Copy kết quả từ stage builder và cấp quyền cho user 'node'
+COPY --from=builder --chown=node:node /app /app
 
-# build phase
-COPY . /app/.
-RUN --mount=type=cache,id=0V4592seSI-node_modules/cache,target=/app/node_modules/.cache yarn run build
+# Tạo sẵn thư mục storage và đảm bảo user 'node' có quyền ghi
+RUN mkdir -p /app/storage/uploads && chown -R node:node /app/storage
 
+# Chuyển xuống quyền non-root để tăng cường bảo mật
+USER node
 
-RUN printf '\nPATH=/app/node_modules/.bin:$PATH' >> /root/.profile
+# Mở cổng mục tiêu 3000
+EXPOSE 3000
 
-
-# start
-COPY . /app
-
-CMD ["yarn run start"]
+# Khởi chạy ứng dụng Nocobase
+CMD ["yarn", "start"]
